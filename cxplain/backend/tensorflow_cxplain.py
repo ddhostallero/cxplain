@@ -151,12 +151,12 @@ class TensorflowCXPlain(CXPlain):
 
             self.model, self.prediction_model = build_fun(input_dim=p, output_dim=output_dim)
 
-    def _fit_single(self, model, X, y, masked_data=None):
+    def _fit_single(self, model, X, y, masked_data=None, omega=None):
         Validation.check_dataset(X, y)
 
         if len(X) != 0:
             # Pre-compute target outputs if none are passed.
-            if masked_data is None:
+            if masked_data is None and omega is None:
                 output_dim = Validation.get_output_dimension(y)
                 masked_data = self.masking_operation.get_predictions_after_masking(self.explained_model, X, y,
                                                                                    batch_size=
@@ -166,6 +166,7 @@ class TensorflowCXPlain(CXPlain):
                                                                                    flatten=
                                                                                    self.flatten_for_explained_model)
 
+                # ((N, n_feats), (N, n_out), (N, feats, n_out)) --> (input, output, output_masked)
                 masked_data = TensorflowCXPlain._clean_output_dims(output_dim, masked_data)
 
             self.last_masked_data = masked_data
@@ -176,7 +177,11 @@ class TensorflowCXPlain(CXPlain):
             else:
                 model_filepath = self.model_filepath
 
-            self.last_history = self.model_builder.fit(model, masked_data, y, model_filepath)
+            if omega is None:
+                self.last_history = self.model_builder.fit(model, masked_data, y, model_filepath)
+            else:
+                self.last_history = self.model_builder.fit(model, X, y, model_filepath, omega)
+       
         return self
 
     def get_last_fit_score(self):
@@ -314,14 +319,16 @@ class TensorflowCXPlain(CXPlain):
                 else:
                     tensorflow_serialiser.save(self.model, model_file_path)
 
-        explained_model_path = os.path.join(directory_path, CXPlain.get_explained_model_file_name(
-            custom_model_saver.get_file_extension())
-        )
 
-        if os.path.exists(explained_model_path) and not overwrite:
-            raise ValueError(already_exists_exception_message.format(explained_model_path))
-        else:
-            custom_model_saver.save(self.explained_model, explained_model_path)
+        if custom_model_saver is not None:
+            explained_model_path = os.path.join(directory_path, CXPlain.get_explained_model_file_name(
+                custom_model_saver.get_file_extension())
+            )
+
+            if os.path.exists(explained_model_path) and not overwrite:
+                raise ValueError(already_exists_exception_message.format(explained_model_path))
+            else:
+                custom_model_saver.save(self.explained_model, explained_model_path)
 
         model_builder_path = os.path.join(directory_path, CXPlain.get_model_builder_pkl_file_name())
         if os.path.exists(model_builder_path) and not overwrite:
@@ -345,7 +352,7 @@ class TensorflowCXPlain(CXPlain):
                 pickle.dump(self.loss, fp)
 
     @staticmethod
-    def load(directory_path, custom_model_loader=PickleModelSerialiser()):
+    def load(directory_path, custom_model_loader=PickleModelSerialiser(), relpath=False):
         """
         Deserialise a CXPlain instance from disk.
 
@@ -363,6 +370,27 @@ class TensorflowCXPlain(CXPlain):
         config_file_path = os.path.join(directory_path, config_file_name)
         with open(config_file_path, "r") as fp:
             config = json.load(fp)
+
+        if relpath:
+            config["model_builder"] =  os.path.join(directory_path, config["model_builder"].split("/")[-1])
+            config["masking_operation"] =  os.path.join(directory_path, config["masking_operation"].split("/")[-1])
+            config["loss"] =  os.path.join(directory_path, config["loss"].split("/")[-1])
+            
+            if type(config["prediction_model"]) == list:
+                config["prediction_model"] = [os.path.join(directory_path, x.split("/")[-1]) for x in config["prediction_model"]]
+            else:
+                config["prediction_model"] =  os.path.join(directory_path, config["prediction_model"].split("/")[-1])
+
+            if type(config["model"]) == list:
+                config["model"] = [os.path.join(directory_path, x.split("/")[-1]) for x in config["model"]]
+            else:
+                config["model"] =  os.path.join(directory_path, config["model"].split("/")[-1])
+            
+            if 'explained_model' in config.keys():
+                # if type(config["explained_model"]) == list:
+                #     config["explained_model"] = [os.path.join(directory_path, x.split("/")[-1]) for x in config["explained_model"]]
+                # else:
+                config["explained_model"] =  os.path.join(directory_path, config["explained_model"].split("/")[-1])
 
         with open(config["model_builder"], "rb") as model_builder_fp:
             model_builder = pickle.load(model_builder_fp)
@@ -393,7 +421,10 @@ class TensorflowCXPlain(CXPlain):
                 prediction_model = [tensorflow_serialiser.load(cur_model) for cur_model in prediction_model]
                 model = [tensorflow_serialiser.load(cur_model) for cur_model in model]
 
-        explained_model = custom_model_loader.load(config["explained_model"])
+        if custom_model_loader is not None:
+            explained_model = custom_model_loader.load(config["explained_model"])
+        else:
+            explained_model = None
 
         instance = TensorflowCXPlain(explained_model, model_builder, masking_operation, loss,
                                      flatten_for_explained_model=flatten_for_explained_model,

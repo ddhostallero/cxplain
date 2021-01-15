@@ -87,7 +87,6 @@ class CXPlain(BaseEstimator):
             else:
                 prediction_model = [os.path.join(directory, CXPlain.get_prediction_model_h5_file_name(i))
                                     for i in range(self.num_models)]
-
         config = {
             "model_builder": os.path.join(directory, CXPlain.get_model_builder_pkl_file_name()),
             "masking_operation": os.path.join(directory, CXPlain.get_masking_operation_pkl_file_name()),
@@ -95,11 +94,15 @@ class CXPlain(BaseEstimator):
             "downsample_factors": self.downsample_factors,
             "num_models": self.num_models,
             "prediction_model": prediction_model,
-            "explained_model": os.path.join(directory, CXPlain.get_explained_model_file_name(
-                model_serialiser.get_file_extension())
-            ),
         }
+
+        if model_serialiser is not None:
+            config["explained_model"] =  os.path.join(directory, CXPlain.get_explained_model_file_name(
+                model_serialiser.get_file_extension())
+            )
+
         return config
+
 
     def get_masked_data(self):
         return self.last_masked_data
@@ -109,8 +112,19 @@ class CXPlain(BaseEstimator):
         raise NotImplementedError()
 
     @abstractmethod
-    def _fit_single(self, model, X, y, masked_data=None):
+    def _fit_single(self, model, X, y, masked_data=None, omega=None):
         raise NotImplementedError()
+
+
+    def fit_precalc(self, X, y, omega):
+        self._build_model(X, y)
+        if self.num_models == 1:
+            self._fit_single(self.model, X, y, masked_data=None, omega=omega)
+        else:
+            for model in self.model:
+                self._fit_single(model, X, y, masked_data=None, omega=omega)
+                masked_data = self.get_masked_data()
+        return self
 
     def fit(self, X, y, masked_data=None):
         """
@@ -210,6 +224,24 @@ class CXPlain(BaseEstimator):
             ret_val = ret_val[0].reshape(target_shape), ret_val[1].reshape(confidence_shape)
         else:
             ret_val = ret_val.reshape(target_shape)
+
+        return ret_val
+
+    def explain_groups(self, X, confidence_level=0.95):
+        if self.prediction_model is None:
+            raise AssertionError("Model must be initialised when calling __predict__. "
+                                 "Did you forget to __fit__ the explanation model?")
+
+        if confidence_level is not None and \
+                (confidence_level <= 0.0 or confidence_level >= 1.0 or \
+                 np.isclose(confidence_level, 0.) or \
+                 np.isclose(confidence_level, 1.)):
+            raise ValueError("The __confidence_level__ must be a value between 0 (exclusive) and 1 (exclusive).")
+
+        if self.num_models == 1:
+            ret_val = self._predict_single(self.prediction_model, X)
+        else:
+            ret_val = self._predict_multiple(X, confidence_level=confidence_level)
 
         return ret_val
 

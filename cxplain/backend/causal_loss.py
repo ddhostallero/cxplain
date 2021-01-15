@@ -20,7 +20,6 @@ from __future__ import print_function
 import tensorflow as tf
 from cxplain.backend.tf_math_interface import TensorflowInterface
 
-
 def safe_evaluate_custom_loss_function(loss_function, y_true, y_pred, math_ops):
     ret_val = loss_function(y_true, y_pred)
 
@@ -49,18 +48,38 @@ def get_delta_errors(y_true, all_but_one_auxiliary_outputs, error_with_all_featu
 
 def get_delta_errors_fixed_size(y_true, all_but_one_auxiliary_outputs, error_with_all_features,
                                 loss_function, log_transform, math_ops):
-    delta_errors = []
-    for all_but_one_auxiliary_output in all_but_one_auxiliary_outputs:
-        error_without_one_feature = safe_evaluate_custom_loss_function(
-            loss_function, y_true, all_but_one_auxiliary_output, math_ops
-        )
 
-        # The error without the feature is an indicator as to how potent the left-out feature is as a predictor.
-        delta_error = math_ops.maximum(error_without_one_feature - error_with_all_features, math_ops.epsilon())
-        if log_transform:
-            delta_error = math_ops.log(1 + delta_error)
-        delta_errors.append(delta_error)
-    delta_errors = math_ops.stack(delta_errors, axis=-1)
+    n_out = math_ops.int_shape(all_but_one_auxiliary_outputs[0])[1]
+    n_feats = len(all_but_one_auxiliary_outputs)
+    x = tf.stack(all_but_one_auxiliary_outputs, axis=1) #(batch, n_feats, n_out)
+
+    y_true_tile = tf.reshape(tf.repeat(y_true, n_feats, axis=1), (-1, n_feats, n_out)) # (batch, n_feats, n_out)
+    error_without_one_feature = safe_evaluate_custom_loss_function(
+        loss_function, y_true_tile, x, math_ops) # (batch, n_feats, n_out)
+
+    error_with_all_features = tf.reshape(error_with_all_features, (-1, n_out)) # (batch, n_out)
+    delta_errors = math_ops.maximum(error_without_one_feature - error_with_all_features, math_ops.epsilon())
+    # delta_errors = error_without_one_feature - error_with_all_features
+    # delta_errors = delta_errors - math_ops.reduce_min(delta_errors, axis=1) + math_ops.epsilon()
+
+    if log_transform:
+        delta_errors = math_ops.log(1 + delta_errors)
+
+    # ---
+    # delta_errors = []
+    # for all_but_one_auxiliary_output in all_but_one_auxiliary_outputs:
+    #     error_without_one_feature = safe_evaluate_custom_loss_function(
+    #         loss_function, y_true, all_but_one_auxiliary_output, math_ops
+    #     )
+
+    #     # The error without the feature is an indicator as to how potent the left-out feature is as a predictor.
+    #     delta_error = math_ops.maximum(error_without_one_feature - error_with_all_features, math_ops.epsilon())
+    #     if log_transform:
+    #         delta_error = math_ops.log(1 + delta_error)
+    #     delta_errors.append(delta_error)
+
+    # delta_errors = math_ops.stack(delta_errors, axis=-1)
+    
     return delta_errors
 
 
@@ -101,3 +120,20 @@ def causal_loss(y_true, y_pred, attention_weights, auxiliary_outputs, all_but_on
         attention_weights = math_ops.squeeze(attention_weights, axis=-1)
 
     return math_ops.mean(math_ops.kullback_leibler_divergence(delta_errors, attention_weights))
+
+
+def causal_loss_precalculated(y_true, y_pred, math_ops=TensorflowInterface):
+    
+    attention_weights = y_pred 
+    omega = y_true
+
+    delta_errors = math_ops.stop_gradient(omega)
+
+    # Ensure correct format.
+    attention_weights = math_ops.clip(attention_weights, math_ops.epsilon(), 1.0)
+
+    if len(attention_weights.shape) == 3:
+        attention_weights = math_ops.squeeze(attention_weights, axis=-1)
+
+    return math_ops.mean(math_ops.kullback_leibler_divergence(delta_errors, attention_weights))
+

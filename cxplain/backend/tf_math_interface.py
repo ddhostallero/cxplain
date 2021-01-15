@@ -137,3 +137,7 @@ class TensorflowInterface(object):
     @staticmethod
     def constant(value):
         return tf.constant(value)
+
+    @staticmethod
+    def reduce_min(value, axis=None):
+        return tf.reduce_min(value, axis)
